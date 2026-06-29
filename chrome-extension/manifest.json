@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Discord Widget Configurator",
+  "version": "1.5.0",
+  "description": "One-click Discord profile widget configurator. Fully automatic with a live on-page console.",
+  "icons": {
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "permissions": [
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://discord.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://discord.com/developers/*"
+      ],
+      "js": [
+        "widget-creator.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://discord.com/developers/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
