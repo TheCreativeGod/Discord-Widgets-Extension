@@ -145,4 +145,3 @@ The script finds Discord's internal modules through the page global
   the end.
 - Use on your own account, at your own risk. Automating account actions is against Discord's
   ToS in spirit; provided for educational purposes.
-```
