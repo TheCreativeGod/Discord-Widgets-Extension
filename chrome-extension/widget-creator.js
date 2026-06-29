@@ -13,29 +13,18 @@
   "use strict";
 
   if (!location.hostname.endsWith("discord.com")) return;
-  const pageWindow = (typeof unsafeWindow !== "undefined" && unsafeWindow) ? unsafeWindow : window;
 
-  if (pageWindow.__discordWidgetCreatorLoaded) return;
-  pageWindow.__discordWidgetCreatorLoaded = true;
+  if (window.__discordWidgetCreatorLoaded) return;
+  window.__discordWidgetCreatorLoaded = true;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   let lastApp = null;
 
   // Experiment flag that reveals the per-app "Widget" tab/editor. Discord keeps
-  // this override only in memory, so it's lost on every page load — we re-apply it
-  // early on each load (see the document_start boot at the bottom).
+  // this override only in memory, so it's lost on every page load
   const WIDGET_EXPERIMENT = "2026-03-widget-config-editor";
   let overrideApplied = false;
-
-  // Firefox "Xray vision": a sandboxed userscript must clone objects into the page
-  // realm before page-context functions can read them. No-op in a real page context.
-  function toPage(obj) {
-    if (typeof cloneInto === "function" && pageWindow !== window) {
-      try { return cloneInto(obj, pageWindow, { cloneFunctions: true }); } catch (e) { return obj; }
-    }
-    return obj;
-  }
 
   // On-page console UI
   const UI = (function () {
@@ -249,7 +238,7 @@
     return { build, log, setStatus, setRunning, isRunning, getJson, setJson, getTarget, setTargetOptions, showFallback, onStart, bindButton };
   })();
 
-  //  Widget template + helpers
+  // Widget template + helpers
   function buildSurfaces() {
     const stats = {};
     for (let i = 1; i <= 6; i++) {
@@ -287,6 +276,7 @@
     );
   }
 
+  // The appId for the page you're on (the editor URL is /applications/<id>/widget).
   function currentAppId() {
     const m = location.pathname.match(/\/applications\/(\d+)/);
     return m ? m[1] : null;
@@ -302,20 +292,82 @@
     return null;
   }
 
-    function readJsonBox() {
+  function readJsonBox() {
     const raw = UI.getJson().trim();
     if (!raw) { UI.log("Paste widget JSON into the box first.", "warn"); return null; }
     try { return JSON.parse(raw); }
     catch (e) { UI.log("That isn't valid JSON: " + e.message, "error"); return null; }
   }
 
-  //  Discord internals + API wrapper
+  // A short, human-readable description of a Discord API error (status + body).
+  function describeErr(e) {
+    if (!e) return "unknown error";
+    let s = "";
+    if (e.status) s += "HTTP " + e.status;
+    if (e.body) { try { s += " " + JSON.stringify(e.body); } catch (x) {} }
+    else if (e.message) s += (s ? " " : "") + e.message;
+    return s || String(e);
+  }
+
+  // Image helpers
+  function walkAssetFields(node, cb) {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) walkAssetFields(item, cb); return; }
+    if (node.value_type === "application_asset" && typeof node.value === "string" && node.value) {
+      cb(node);
+      return;
+    }
+    for (const key of Object.keys(node)) walkAssetFields(node[key], cb);
+  }
+
+  function collectAssetNames(surfaces) {
+    const names = new Set();
+    walkAssetFields(surfaces, (n) => names.add(n.value));
+    return names;
+  }
+
+  // Return a deep copy of `surfaces` with every asset name replaced via `remap`.
+  function remapSurfaceAssets(surfaces, remap) {
+    if (!remap || !Object.keys(remap).length) return surfaces;
+    const clone = JSON.parse(JSON.stringify(surfaces));
+    walkAssetFields(clone, (n) => { if (remap[n.value] != null) n.value = remap[n.value]; });
+    return clone;
+  }
+  function assetName(a) { return a ? (a.key != null ? a.key : a.name) : undefined; }
+  function assetId(a) { return a ? (a.asset_id != null ? a.asset_id : a.id) : undefined; }
+
+  function extForContentType(ct) {
+    switch (ct) {
+      case "image/jpeg": return "jpg";
+      case "image/gif": return "gif";
+      case "image/webp": return "webp";
+      default: return "png";
+    }
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(new Error("couldn't read image bytes"));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function fetchAssetDataUrl(appId, id, contentType) {
+    const ext = extForContentType(contentType);
+    const res = await fetch(`https://cdn.discordapp.com/app-assets/${appId}/${id}.${ext}`, { credentials: "omit" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return blobToDataUrl(await res.blob());
+  }
+
+  // Discord internals + API wrapper
   function getInternals() {
-    if (typeof pageWindow.webpackChunkdiscord_developers === "undefined") {
+    if (typeof window.webpackChunkdiscord_developers === "undefined") {
       throw new Error("webpackChunkdiscord_developers not found. Open https://discord.com/developers/applications and let it load.");
     }
-    const wpRequire = pageWindow.webpackChunkdiscord_developers.push(toPage([["dwc_" + Math.random()], {}, (r) => r]));
-    pageWindow.webpackChunkdiscord_developers.pop();
+    const wpRequire = window.webpackChunkdiscord_developers.push([["dwc_" + Math.random()], {}, (r) => r]);
+    window.webpackChunkdiscord_developers.pop();
     const find = (pred, name) => {
       const mod = Object.values(wpRequire.c).find(pred);
       if (!mod) throw new Error(`Couldn't locate ${name} — Discord's internal modules may have changed.`);
@@ -333,7 +385,7 @@
   async function apiCall(api, method, opts, label) {
     UI.log(label + "…", "step");
     try {
-      return await api[method](toPage(opts));
+      return await api[method](opts);
     } catch (e) {
       let detail = "";
       if (e && e.status) detail += ` HTTP ${e.status}`;
@@ -358,26 +410,36 @@
     return cfg;
   }
 
-  //  Bot-authenticated finalize (privileged request)
-  function gmFinalize(gmXHR, url, botToken, bodyObj) {
-    return new Promise((resolve) => {
-      gmXHR({
-        method: "PATCH",
-        url,
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bot " + botToken,
-          "User-Agent": "DiscordBot (https://github.com/discord/discord-api-docs, 1.0.0)",
-        },
-        data: JSON.stringify(bodyObj),
-        anonymous: true,
-        onload: (r) => resolve({ ok: r.status >= 200 && r.status < 300, status: r.status, body: r.responseText || "" }),
-        onerror: () => resolve({ ok: false, status: 0, body: "network error" }),
-        ontimeout: () => resolve({ ok: false, status: 0, body: "timeout" }),
-      });
-    });
+  async function getAppAssets(api, appId) {
+    const paths = [`/applications/${appId}/assets`, `/oauth2/applications/${appId}/assets`];
+    let lastErr;
+    for (const url of paths) {
+      try {
+        const res = await api.get({ url });
+        const b = res && res.body;
+        return Array.isArray(b) ? b : (b && Array.isArray(b.assets) ? b.assets : []);
+      } catch (e) { lastErr = e; if (!(e && e.status === 404)) throw e; }
+    }
+    throw lastErr || new Error("couldn't list application assets");
   }
 
+  function dataUrlToBlob(dataUrl) {
+    return fetch(dataUrl).then((r) => r.blob());
+  }
+
+  async function uploadAsset(api, appId, name, dataUrl, contentType) {
+    const blob = await dataUrlToBlob(dataUrl);
+    const ext = extForContentType(contentType || blob.type);
+    const slotRes = await api.post({ url: `/applications/${appId}/assets/upload`, body: { filename: `${name}.${ext}`, file_size: blob.size } });
+    const slot = slotRes && slotRes.body;
+    if (!slot || !slot.upload_url || !slot.upload_filename) throw new Error("upload-slot response missing upload_url/upload_filename");
+    const put = await fetch(slot.upload_url, { method: "PUT", body: blob });
+    if (!put.ok) throw new Error("storage PUT failed: HTTP " + put.status);
+    const regRes = await api.post({ url: `/applications/${appId}/assets`, body: { key: name, upload_filename: slot.upload_filename, visibility: "public" } });
+    return regRes && regRes.body;
+  }
+
+  // Bot-authenticated finalize (privileged request)
   function bridgeFinalize(appId, userId, botToken) {
     return new Promise((resolve) => {
       const id = "dwc-" + Math.random().toString(36).slice(2);
@@ -399,19 +461,66 @@
   }
 
   async function finalize(appId, userId, botToken) {
-    const bodyObj = { data: { dynamic: [] } };
-    const gmXHR =
-      (typeof GM_xmlhttpRequest !== "undefined" && GM_xmlhttpRequest) ||
-      (typeof GM !== "undefined" && GM && GM.xmlHttpRequest) || null;
-    if (gmXHR) {
-      UI.log("Finalizing via privileged request…", "info");
-      return gmFinalize(gmXHR, `https://discord.com/api/v9/applications/${appId}/users/${userId}/identities/0/profile`, botToken, bodyObj);
-    }
-    UI.log("Finalizing via the extension background privileged request…", "info");
+    UI.log("Finalizing via the extension background (privileged request)…", "info");
     return bridgeFinalize(appId, userId, botToken);
   }
 
   // Actions: Create / Import / Refresh / Export
+  async function buildAssetBundle(api, appId, surfaces) {
+    const names = collectAssetNames(surfaces);
+    if (!names.size) return null;
+    UI.log(`Found ${names.size} image(s) — downloading so they travel with the export…`, "step");
+    let list;
+    try { list = await getAppAssets(api, appId); }
+    catch (e) { UI.log("Couldn't list this app's assets — exporting without embedded images: " + describeErr(e), "warn"); return null; }
+    const byName = new Map(list.map((a) => [assetName(a), a]));
+    const bundle = {};
+    let ok = 0, miss = 0;
+    for (const name of names) {
+      const asset = byName.get(name);
+      const aid = assetId(asset);
+      if (!aid) { UI.log(`Image "${name}" isn't in this app's asset list — skipping.`, "warn"); miss++; continue; }
+      try {
+        const ct = asset.metadata && asset.metadata.content_type;
+        bundle[name] = {
+          asset_type: asset.asset_type != null ? asset.asset_type : (asset.type != null ? asset.type : "image"),
+          content_type: ct || "image/png",
+          image: await fetchAssetDataUrl(appId, aid, ct),
+        };
+        ok++;
+      } catch (e) { miss++; UI.log(`Couldn't download image "${name}": ${describeErr(e)}`, "warn"); }
+    }
+    if (ok) UI.log(`Embedded ${ok} image(s)` + (miss ? `, ${miss} skipped` : "") + ".", "success");
+    else UI.log("No images could be embedded — recipients will need to re-add images.", "warn");
+    return Object.keys(bundle).length ? bundle : null;
+  }
+
+  async function materializeAssets(api, appId, assets) {
+    const names = assets ? Object.keys(assets) : [];
+    if (!names.length) return null;
+    UI.log(`Preparing ${names.length} image(s) on app ${appId}…`, "step");
+    let existing = [];
+    try { existing = await getAppAssets(api, appId); }
+    catch (e) { UI.log("Couldn't list the target app's assets (will try uploading anyway): " + describeErr(e), "warn"); }
+    const existingByName = new Map(existing.map((a) => [assetName(a), a]));
+    const remap = {};
+    let uploaded = 0, reused = 0, failed = 0;
+    for (const name of names) {
+      if (existingByName.has(name)) { remap[name] = name; reused++; continue; }
+      const entry = assets[name];
+      const image = typeof entry === "string" ? entry : (entry && entry.image);
+      const contentType = (entry && typeof entry === "object" && entry.content_type) || null;
+      if (!image) { UI.log(`No image data stored for "${name}" — skipping.`, "warn"); failed++; continue; }
+      try {
+        const asset = await uploadAsset(api, appId, name, image, contentType);
+        remap[name] = assetName(asset) || name;
+        uploaded++;
+      } catch (e) { failed++; UI.log(`Couldn't upload image "${name}": ${describeErr(e)}`, "warn"); }
+    }
+    UI.log(`Images ready — ${uploaded} uploaded, ${reused} already present` + (failed ? `, ${failed} failed` : "") + ".", failed ? "warn" : "success");
+    return remap;
+  }
+
   async function runFlow(opts) {
     if (UI.isRunning()) return;
     UI.setRunning(true);
@@ -443,7 +552,7 @@
 
     // Step 1: create the application
     const appRes = await apiCall(api, "post", { url: "/applications", body: { name: "My New Widget", team_id: null } }, "Creating app (solve captcha if prompted)");
-    FluxDispatcher.dispatch(toPage({ type: "APPLICATION_CREATE_SUCCESS", application: appRes.body }));
+    FluxDispatcher.dispatch({ type: "APPLICATION_CREATE_SUCCESS", application: appRes.body });
     const appId = appRes.body.id;
     UI.log(`App created (id ${appId}).`, "success");
 
@@ -462,7 +571,12 @@
     const configRes = await apiCall(api, "post", { url: `/applications/${appId}/widget-configs`, body: { display_name: displayName } }, "Creating widget config");
     const configId = configRes.body.config_id;
     lastApp = { appId, configId };
-    await apiCall(api, "patch", { url: `/applications/${appId}/widget-configs/${configId}`, body: surfacesBody }, opts.surfaces ? "Applying imported layout" : "Applying widget layout");
+    let layoutBody = surfacesBody;
+    if (opts.assets) {
+      const remap = await materializeAssets(api, appId, opts.assets);
+      layoutBody = { surfaces: remapSurfaceAssets(surfacesBody.surfaces, remap) };
+    }
+    await apiCall(api, "patch", { url: `/applications/${appId}/widget-configs/${configId}`, body: layoutBody }, opts.surfaces ? "Applying imported layout" : "Applying widget layout");
     await apiCall(api, "post", { url: `/applications/${appId}/widget-configs/${configId}/publish` }, "Publishing widget");
     UI.log("Widget published.", "success");
 
@@ -480,7 +594,7 @@
     const botToken = botTokenRes.body.token;
     UI.log("Bot token acquired.", "success");
 
-    // Step 6: finalize the profile identity (privileged request — no terminal)
+    // Step 6: finalize the profile identity
     UI.log("Finalizing profile identity automatically (no PowerShell needed)…", "step");
     const result = await finalize(appId, userId, botToken);
     if (result.ok) {
@@ -515,7 +629,7 @@
     UI.setStatus("Failed — see log");
   }
 
-  async function applyToApp(api, appId, body) {
+  async function applyToApp(api, appId, body, assets) {
     let configId = (lastApp && lastApp.appId === appId) ? lastApp.configId : null;
     if (!configId) {
       const cfg = await fetchConfig(api, appId);
@@ -526,7 +640,12 @@
       configId = configRes.body.config_id;
     }
     lastApp = { appId, configId };
-    await apiCall(api, "patch", { url: `/applications/${appId}/widget-configs/${configId}`, body }, "Applying JSON");
+    let outBody = body;
+    if (assets && Object.keys(assets).length) {
+      const remap = await materializeAssets(api, appId, assets);
+      outBody = { surfaces: remapSurfaceAssets(body.surfaces, remap) };
+    }
+    await apiCall(api, "patch", { url: `/applications/${appId}/widget-configs/${configId}`, body: outBody }, "Applying JSON");
     await apiCall(api, "post", { url: `/applications/${appId}/widget-configs/${configId}/publish` }, "Publishing");
   }
 
@@ -543,21 +662,21 @@
     const target = UI.getTarget();
     if (target === "new") {
       UI.log("Importing — creating a NEW widget from this JSON…", "step");
-      runFlow({ surfaces: body, displayName: json.display_name });
+      runFlow({ surfaces: body, displayName: json.display_name, assets: json.assets });
     } else {
-      importToExisting(target, body);
+      importToExisting(target, body, json.assets);
     }
   }
 
   // Import into an existing widget
-  async function importToExisting(appId, body) {
+  async function importToExisting(appId, body, assets) {
     if (UI.isRunning()) return;
     UI.setRunning(true);
     UI.setStatus("Updating…");
     try {
       const { api } = getInternals();
       UI.log(`Importing into existing widget (app ${appId})…`, "step");
-      await applyToApp(api, appId, body);
+      await applyToApp(api, appId, body, assets);
       UI.log(`Existing widget (app ${appId}) updated & published. ✔`, "success");
       UI.setStatus("Updated");
     } catch (err) {
@@ -583,7 +702,7 @@
       const { api } = getInternals();
       const appId = currentAppId() || (lastApp && lastApp.appId);
       if (!appId) throw new Error("Open the widget's page (URL has /applications/<id>) or create one first.");
-      await applyToApp(api, appId, body);
+      await applyToApp(api, appId, body, json.assets);
       UI.log("Widget refreshed & published. ✔", "success");
       UI.setStatus("Refreshed");
     } catch (err) {
@@ -630,10 +749,12 @@
         throw new Error("Couldn't find 'surfaces' to export.");
       }
       if (cfg.config_id) lastApp = { appId, configId: cfg.config_id };
-      const envelope = { _type: "discord-widget", version: 1, display_name: cfg.display_name || "My Widget", surfaces: cfg.surfaces };
+      const assets = await buildAssetBundle(api, appId, cfg.surfaces);
+      const envelope = { _type: "discord-widget", version: 2, display_name: cfg.display_name || "My Widget", surfaces: cfg.surfaces };
+      if (assets) envelope.assets = assets;
       const text = JSON.stringify(envelope, null, 2);
       UI.setJson(text);
-      UI.log("Exported! JSON is in the box below. Share it, or edit + Refresh.", "success");
+      UI.log("Exported!" + (assets ? " Images are embedded." : "") + " JSON is in the box. Share it, or edit + Refresh.", "success");
       UI.setStatus("Exported");
     } catch (err) {
       UI.log(`Export failed: ${err && err.message ? err.message : err}`, "error");
@@ -662,7 +783,7 @@
     return false;
   }
 
-  // Manual fallback (Tab button): re-apply
+  // Manual fallback (Tab button)
   async function reactivateWidgetTab() {
     if (UI.isRunning()) return;
     UI.log("Re-enabling the Widget tab…", "step");
