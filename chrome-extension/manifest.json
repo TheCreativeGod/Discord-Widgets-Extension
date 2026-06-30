@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Discord Widget Configurator",
-  "version": "1.5.0",
+  "version": "1.6.2",
   "description": "One-click Discord profile widget configurator. Fully automatic with a live on-page console.",
   "icons": {
     "48": "icon-48.png",
