@@ -10,12 +10,13 @@ with two improvements:
 2. **A live on-page console.** Every step is printed to a floating panel (and the DevTools
    console), so you can watch progress and see any error immediately.
 
-Two forms, same logic:
+Three forms, same logic:
 
 | Form | Folder | Best for |
 |------|--------|----------|
 | Chrome extension | [`chrome-extension/`](chrome-extension) | Chrome / Edge / Brave |
 | Firefox extension | `firefox-extension/`- Soon | Firefox |
+| UserScript (credits to [@ItzMeShadow999](https://github.com/ItzMeShadow999)) | [`Discord_Widget_Configurator`](https://github.com/ItzMeShadow999/Discord_Widget_Configurator) | Tampermonkey / Violentmonkey / ScriptVault / etc. |
 
 ---
 
