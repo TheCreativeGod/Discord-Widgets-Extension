@@ -15,7 +15,7 @@ Two forms, same logic:
 | Form | Folder | Best for |
 |------|--------|----------|
 | Chrome extension | [`chrome-extension/`](chrome-extension) | Chrome / Edge / Brave |
-| Firefox extension | `firefox-extension/`- Soon | Firefox |
+| Firefox extension | [`firefox-extension/`](firefox-extension) | Firefox |
 
 ---
 
@@ -93,7 +93,16 @@ re-applies the override and nudges the sidebar to reveal the tab.
 > Requires Chrome/Edge **111+** (content scripts in the page's `MAIN` world).
 
 ### Firefox extension
-SOON
+1. Go to `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…**
+2. Select `firefox-extension/manifest.json`.
+3. Open the Developer Portal and **reload the page**.
+
+> Requires Firefox **128+**. Temporary add-ons are removed when Firefox restarts.
+>
+> **If finalization fails with a permission/CORS error**, grant the host permission: go to
+> `about:addons` → *Discord Widget Creator* → **Permissions** → enable
+> *"Access your data for discord.com"*, then reload and run again. The background script
+> needs that access to talk to Discord's API.
 
 ---
 
